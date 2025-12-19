@@ -9,6 +9,8 @@ class FingerprintAuth {
         this.statusText = document.querySelector(".scanner-status");
         this.scannerAnimation = document.querySelector(".scanner-animation");
         this.fingerprintForm = document.getElementById("fingerprint-form");
+        this.csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || 
+                        document.querySelector('input[name="_token"]')?.value;
 
         this.init();
     }
@@ -36,13 +38,6 @@ class FingerprintAuth {
     }
 
     async startScan() {
-        const userId = document.getElementById("user_id").value.trim();
-
-        if (!userId) {
-            this.showError("Please enter your User ID first");
-            return;
-        }
-
         if (!this.checkBrowserSupport()) {
             return;
         }
@@ -50,20 +45,24 @@ class FingerprintAuth {
         try {
             this.updateStatus("Scanning fingerprint...", "scanning");
 
-            // For demo purposes, we'll simulate fingerprint scanning
-            // In production, this would use WebAuthn API
-            await this.simulateFingerprintScan();
+            // Use real WebAuthn authentication
+            const result = await this.authenticateWithWebAuthn();
 
-            // If you want to implement real WebAuthn:
-            // const credential = await this.authenticateWithWebAuthn(userId);
+            if (result.success) {
+                this.updateStatus("Fingerprint verified successfully!", "success");
+                
+                // Set the fingerprint data (credential ID)
+                document.getElementById("fingerprint_data").value = result.credentialId;
 
-            this.updateStatus("Fingerprint verified successfully!", "success");
-
-            // Submit the form after successful scan
-            setTimeout(() => {
-                this.fingerprintForm.submit();
-            }, 1000);
+                // Submit the form after successful scan
+                setTimeout(() => {
+                    this.fingerprintForm.submit();
+                }, 1000);
+            } else {
+                this.showError(result.message || "Fingerprint not recognized");
+            }
         } catch (error) {
+            console.error("Fingerprint authentication error:", error);
             this.showError(
                 error.message || "Fingerprint scan failed. Please try again."
             );
@@ -71,139 +70,122 @@ class FingerprintAuth {
     }
 
     /**
-     * Simulate fingerprint scanning (for demo)
-     * Remove this in production and use real WebAuthn
+     * Real WebAuthn Implementation
      */
-    simulateFingerprintScan() {
-        return new Promise((resolve, reject) => {
-            // Simulate scanning delay
-            setTimeout(() => {
-                // Simulate random success/failure (90% success rate for demo)
-                const success = Math.random() > 0.1;
-
-                if (success) {
-                    // Generate a demo fingerprint token
-                    const token = this.generateDemoToken();
-                    document.getElementById("fingerprint_data").value = token;
-                    resolve(token);
-                } else {
-                    reject(new Error("Fingerprint not recognized"));
-                }
-            }, 2000);
-        });
-    }
-
-    /**
-     * Generate a demo authentication token
-     */
-    generateDemoToken() {
-        const timestamp = Date.now();
-        const random = Math.random().toString(36).substring(2);
-        return btoa(`fingerprint_${timestamp}_${random}`);
-    }
-
-    /**
-     * Real WebAuthn Implementation (for production use)
-     */
-    async authenticateWithWebAuthn(userId) {
+    async authenticateWithWebAuthn() {
         try {
-            // This would require server-side setup
             // 1. Get challenge from server
-            const challengeResponse = await fetch("/api/auth/challenge", {
-                method: "POST",
+            const challengeResponse = await fetch("/webauthn/challenge", {
+                method: "GET",
                 headers: {
                     "Content-Type": "application/json",
-                    "X-CSRF-TOKEN": document.querySelector(
-                        'meta[name="csrf-token"]'
-                    ).content,
+                    "X-CSRF-TOKEN": this.csrfToken,
                 },
-                body: JSON.stringify({ user_id: userId }),
             });
+
+            if (!challengeResponse.ok) {
+                throw new Error("Failed to get authentication challenge");
+            }
 
             const challengeData = await challengeResponse.json();
 
-            // 2. Create credential request
+            // 2. Convert challenge from base64
             const publicKeyCredentialRequestOptions = {
-                challenge: Uint8Array.from(challengeData.challenge, (c) =>
-                    c.charCodeAt(0)
-                ),
-                allowCredentials: challengeData.allowCredentials.map(
-                    (cred) => ({
-                        id: Uint8Array.from(atob(cred.id), (c) =>
-                            c.charCodeAt(0)
-                        ),
-                        type: "public-key",
-                        transports: ["usb", "nfc", "ble", "internal"],
-                    })
-                ),
+                challenge: this.base64ToArrayBuffer(challengeData.challenge),
                 timeout: 60000,
-                userVerification: "required",
+                rpId: window.location.hostname,
+                userVerification: "preferred"
             };
+
+            // If there are allowed credentials, add them
+            if (challengeData.allowCredentials && challengeData.allowCredentials.length > 0) {
+                publicKeyCredentialRequestOptions.allowCredentials = challengeData.allowCredentials.map(
+                    cred => ({
+                        id: this.base64ToArrayBuffer(cred.id),
+                        type: "public-key",
+                        transports: cred.transports || ["internal", "usb", "nfc", "ble"]
+                    })
+                );
+            }
 
             // 3. Request credential from authenticator
             const credential = await navigator.credentials.get({
                 publicKey: publicKeyCredentialRequestOptions,
             });
 
-            // 4. Send credential to server for verification
-            const verifyResponse = await fetch("/api/auth/verify", {
+            if (!credential) {
+                throw new Error("No credential received");
+            }
+
+            // 4. Prepare credential data for server
+            const credentialData = {
+                id: credential.id,
+                rawId: this.arrayBufferToBase64(credential.rawId),
+                type: credential.type,
+                response: {
+                    authenticatorData: this.arrayBufferToBase64(credential.response.authenticatorData),
+                    clientDataJSON: this.arrayBufferToBase64(credential.response.clientDataJSON),
+                    signature: this.arrayBufferToBase64(credential.response.signature),
+                    userHandle: credential.response.userHandle ? 
+                        this.arrayBufferToBase64(credential.response.userHandle) : null
+                }
+            };
+
+            // 5. Send credential to server for verification
+            const verifyResponse = await fetch("/webauthn/verify", {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
-                    "X-CSRF-TOKEN": document.querySelector(
-                        'meta[name="csrf-token"]'
-                    ).content,
+                    "X-CSRF-TOKEN": this.csrfToken,
                 },
-                body: JSON.stringify({
-                    user_id: userId,
-                    credential: {
-                        id: credential.id,
-                        rawId: btoa(
-                            String.fromCharCode(
-                                ...new Uint8Array(credential.rawId)
-                            )
-                        ),
-                        response: {
-                            authenticatorData: btoa(
-                                String.fromCharCode(
-                                    ...new Uint8Array(
-                                        credential.response.authenticatorData
-                                    )
-                                )
-                            ),
-                            clientDataJSON: btoa(
-                                String.fromCharCode(
-                                    ...new Uint8Array(
-                                        credential.response.clientDataJSON
-                                    )
-                                )
-                            ),
-                            signature: btoa(
-                                String.fromCharCode(
-                                    ...new Uint8Array(
-                                        credential.response.signature
-                                    )
-                                )
-                            ),
-                            userHandle: credential.response.userHandle
-                                ? btoa(
-                                      String.fromCharCode(
-                                          ...new Uint8Array(
-                                              credential.response.userHandle
-                                          )
-                                      )
-                                  )
-                                : null,
-                        },
-                    },
-                }),
+                body: JSON.stringify(credentialData),
             });
 
-            return await verifyResponse.json();
+            if (!verifyResponse.ok) {
+                throw new Error("Verification failed");
+            }
+
+            const result = await verifyResponse.json();
+            return result;
+
         } catch (error) {
             console.error("WebAuthn error:", error);
-            throw new Error("Biometric authentication failed");
+            
+            // Provide user-friendly error messages
+            if (error.name === "NotAllowedError") {
+                throw new Error("Authentication was cancelled or timed out");
+            } else if (error.name === "InvalidStateError") {
+                throw new Error("This device is not registered");
+            } else if (error.name === "NotSupportedError") {
+                throw new Error("This browser doesn't support biometric authentication");
+            }
+            
+            throw error;
         }
+    }
+
+    /**
+     * Helper function to convert base64 to ArrayBuffer
+     */
+    base64ToArrayBuffer(base64) {
+        const binaryString = atob(base64.replace(/-/g, '+').replace(/_/g, '/'));
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        return bytes.buffer;
+    }
+
+    /**
+     * Helper function to convert ArrayBuffer to base64
+     */
+    arrayBufferToBase64(buffer) {
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.byteLength; i++) {
+            binary += String.fromCharCode(bytes[i]);
+        }
+        return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
     }
 
     updateStatus(message, status = "idle") {

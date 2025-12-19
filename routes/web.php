@@ -13,6 +13,16 @@ Route::get('/login', [AuthController::class, 'showLogin'])->name('login');
 Route::post('/login', [AuthController::class, 'login']);
 Route::post('/login/fingerprint', [AuthController::class, 'loginWithFingerprint']);
 
+// WebAuthn Routes
+Route::get('/webauthn/challenge', [AuthController::class, 'generateChallenge']);
+Route::post('/webauthn/verify', [AuthController::class, 'verifyCredential']);
+
+// WebAuthn Registration (protected route)
+Route::middleware(['auth'])->group(function () {
+    Route::get('/webauthn/register/options', [AuthController::class, 'getRegistrationOptions']);
+    Route::post('/webauthn/register', [AuthController::class, 'registerCredential']);
+});
+
 // Protected Routes
 Route::middleware(['auth'])->group(function () {
     
