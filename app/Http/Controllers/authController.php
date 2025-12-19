@@ -23,12 +23,9 @@ class AuthController extends Controller
 
     $cardNumber = $request->input('card_number');
     $pin = $request->input('pin');
-
-    // 1. Find the user
     $user = User::where('card_number', $cardNumber)->first();
 
-    // 2. Manual SHA-256 Comparison
-    // We hash the input PIN and see if it matches the string in the DB
+    
     if ($user && hash('sha256', $pin) === $user->card_pin) {
         Auth::login($user);
         $request->session()->regenerate();

@@ -157,27 +157,11 @@
             }
         });
 
-        // Close dropdowns when clicking outside
         document.addEventListener('click', function(e) {
             if (!e.target.closest('.user-menu')) {
                 document.querySelector('.user-menu').classList.remove('active');
             }
         });
-
-        // Alert close buttons
-        document.querySelectorAll('.alert-close').forEach(btn => {
-            btn.addEventListener('click', function() {
-                this.parentElement.remove();
-            });
-        });
-
-        // Auto-hide alerts after 5 seconds
-        setTimeout(() => {
-            document.querySelectorAll('.alert').forEach(alert => {
-                alert.style.animation = 'slideOut 0.3s ease-out';
-                setTimeout(() => alert.remove(), 300);
-            });
-        }, 5000);
     </script>
 </body>
 </html>

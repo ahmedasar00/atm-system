@@ -58,8 +58,7 @@ class ATMController extends Controller
     // NEW HISTORY METHOD
     public function showHistory()
     {
-        // In the future, fetch real transactions from database
-        // For now, the view has hardcoded demo data
+        
         
         return view('atm.history');
     }
