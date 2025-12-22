@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use App\Models\Account;
 use App\Models\Transaction;
 use App\Services\FraudDetectionService;
@@ -65,28 +66,41 @@ class ATMController extends Controller
                 if ($attempts >= 3) {
                     $account->freeze();
                     session()->forget($attemptKey);
-                    return back()->with('error', 'Account frozen after 3 failed PIN attempts.');
+                    $failedTransaction = Transaction::create([
+                        'transaction_id' => Transaction::generateTransactionId(),
+                        'user_id' => $user->id,
+                        'from_account_id' => $account->id,
+                        'to_account_id' => null,
+                        'transaction_type' => 'withdrawal',
+                        'amount' => $amount,
+                        'latitude' => $latitude,
+                        'longitude' => $longitude,
+                        'status' => 'failed',
+                        'transaction_date' => now(),
+                    ]);
+                    $fraudService->detectFraud($user->id, $amount, $failedTransaction->transaction_id, $latitude, $longitude, $attempts);
+                    return back()->with('error', 'Account frozen after 3 failed PIN attempts. Transaction marked as failed.');
                 }
                 return back()->withInput()->with('verify_pin', true)->with('error', 'Unusual activity detected. Please enter your PIN to confirm this transaction.');
             }
         }
         
-        // Deduct the amount from account
-        $account->deduct($amount);
-        
-        // Create transaction record with location
-        $transaction = Transaction::create([
-            'transaction_id' => Transaction::generateTransactionId(),
-            'user_id' => $user->id,
-            'from_account_id' => $account->id,
-            'to_account_id' => null,
-            'transaction_type' => 'withdrawal',
-            'amount' => $amount,
-            'latitude' => $latitude,
-            'longitude' => $longitude,
-            'status' => 'completed',
-            'transaction_date' => now(),
-        ]);
+        // Perform balance change and transaction creation atomically
+        $transaction = DB::transaction(function () use ($account, $user, $amount, $latitude, $longitude) {
+            $account->deduct($amount);
+            return Transaction::create([
+                'transaction_id' => Transaction::generateTransactionId(),
+                'user_id' => $user->id,
+                'from_account_id' => $account->id,
+                'to_account_id' => null,
+                'transaction_type' => 'withdrawal',
+                'amount' => $amount,
+                'latitude' => $latitude,
+                'longitude' => $longitude,
+                'status' => 'completed',
+                'transaction_date' => now(),
+            ]);
+        });
 
         // Check for fraud
         $fraudService = FraudDetectionService::getInstance();
@@ -159,31 +173,42 @@ class ATMController extends Controller
                 if ($attempts >= 3) {
                     $fromAccount->freeze();
                     session()->forget($attemptKey);
-                    return back()->with('error', 'Account frozen after 3 failed PIN attempts.');
+                    $failedTransaction = Transaction::create([
+                        'transaction_id' => Transaction::generateTransactionId(),
+                        'user_id' => $user->id,
+                        'from_account_id' => $fromAccount->id,
+                        'to_account_id' => $toAccount->id,
+                        'transaction_type' => 'transfer',
+                        'amount' => $amount,
+                        'latitude' => $latitude,
+                        'longitude' => $longitude,
+                        'status' => 'failed',
+                        'transaction_date' => now(),
+                    ]);
+                    $fraudService->detectFraud($user->id, $amount, $failedTransaction->transaction_id, $latitude, $longitude, $attempts);
+                    return back()->with('error', 'Account frozen after 3 failed PIN attempts. Transaction marked as failed.');
                 }
                 return back()->withInput()->with('verify_pin', true)->with('error', 'Unusual activity detected. Please enter your PIN to confirm this transaction.');
             }
         }
         
-        // Deduct from source account
-        $fromAccount->deduct($amount);
-        
-        // Add to destination account
-        $toAccount->deposit($amount);
-        
-        // Create transaction record with location
-        $transaction = Transaction::create([
-            'transaction_id' => Transaction::generateTransactionId(),
-            'user_id' => $user->id,
-            'from_account_id' => $fromAccount->id,
-            'to_account_id' => $toAccount->id,
-            'transaction_type' => 'transfer',
-            'amount' => $amount,
-            'latitude' => $latitude,
-            'longitude' => $longitude,
-            'status' => 'completed',
-            'transaction_date' => now(),
-        ]);
+        // Perform balance changes and transaction creation atomically
+        $transaction = DB::transaction(function () use ($fromAccount, $toAccount, $user, $amount, $latitude, $longitude) {
+            $fromAccount->deduct($amount);
+            $toAccount->deposit($amount);
+            return Transaction::create([
+                'transaction_id' => Transaction::generateTransactionId(),
+                'user_id' => $user->id,
+                'from_account_id' => $fromAccount->id,
+                'to_account_id' => $toAccount->id,
+                'transaction_type' => 'transfer',
+                'amount' => $amount,
+                'latitude' => $latitude,
+                'longitude' => $longitude,
+                'status' => 'completed',
+                'transaction_date' => now(),
+            ]);
+        });
 
         // Check for fraud
         $fraudService = FraudDetectionService::getInstance();
